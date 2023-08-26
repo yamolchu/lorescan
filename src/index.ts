@@ -12,9 +12,7 @@ const {
   isMainThread,
   parentPort,
 } = require("worker_threads");
-const { faker } = require('@faker-js/faker');
-
-const RecaptchaV2TaskKey = config.ANTICAPTCHA_API_KEY;
+const { faker } = require("@faker-js/faker");
 
 const createCsvWriter = require("csv-writer").createObjectCsvWriter;
 
@@ -23,13 +21,13 @@ const csvWriter = createCsvWriter({
   header: [
     { id: "email", title: "Email" },
     { id: "proxy", title: "Proxy" },
-    {id:"firstName",title:"firstName"},
-    {id:"lastName",title:"lastName"},
+    { id: "firstName", title: "firstName" },
+    { id: "lastName", title: "lastName" },
   ],
   append: true,
 });
-
-
+const numThreads = config.numThreads;
+const customDelay = config.customDelay;
 
 function parseEmails(filePath) {
   const lines = fs.readFileSync(filePath, "utf8").split("\n");
@@ -58,10 +56,9 @@ const proxies = parseProxies("./inputs/proxies.txt");
 
 const SITEURL = "https://app.lorescan.com/";
 const SITE_KEY = "x19joXI_IeQnFJ7YnfDapSZq";
+const regUrl = "https://app.lorescan.com/api/auth/createUser";
 
-async function auth(email,proxy) {
-  const regUrl = "https://app.lorescan.com/api/auth/createUser";
-
+async function auth(email, proxy) {
   const headers = {
     authority: "app.lorescan.com",
     accept: "*/*",
@@ -80,24 +77,27 @@ async function auth(email,proxy) {
 
   const session = axios.create({
     headers: headers,
-    httpsAgent: config.proxyType==='http'? new HttpsProxyAgent(`http://${proxy}`):new SocksProxyAgent(`socks5://${proxy}`),
+    httpsAgent:
+      config.proxyType === "http"
+        ? new HttpsProxyAgent(`http://${proxy}`)
+        : new SocksProxyAgent(`socks5://${proxy}`),
   });
-const firstName=faker.person.firstName()
-const lastName =faker.person.lastName()
+  const firstName = faker.person.firstName();
+  const lastName = faker.person.lastName();
   const data = {
-    "first_name": firstName,
-    "last_name": lastName,
-    "email": email.email,
-    "password": "n/a",
-    "referral_code": config.ref
-  }
-  const res = await session.post(regUrl, data)
+    first_name: firstName,
+    last_name: lastName,
+    email: email.email,
+    password: "n/a",
+    referral_code: config.ref,
+  };
+  const res = await session.post(regUrl, data);
   const resultData = [
     {
       email: email.email,
       proxy: proxy,
-      firstName:firstName,
-      lastName:lastName
+      firstName: firstName,
+      lastName: lastName,
     },
   ];
   await csvWriter
@@ -109,33 +109,40 @@ const lastName =faker.person.lastName()
       console.error(error);
     });
 
-  console.log(res.data.status)
+  console.log(res.data.status);
 }
 
-
-if (isMainThread) {
-  for (let i = 0; i < emails.length; i++) {
-    const worker = new Worker(__filename, {
-      workerData: { email: emails[i], proxy: proxies[i] },
-    });
-    worker.on("message", (message) => {
-      console.log(message);
-    });
-    worker.on("error", (error) => {
-      console.error(error);
-    });
-    worker.on("exit", (code) => {
-      if (code !== 0) {
-        console.error(`Thread Exit ${code}`);
-      }
-    });
-
-    // Остановка создания потоков, когда достигнуто указанное количество
-    if (i + 1 === config.numThreads) {
-      break;
-    }
+function authRecursive(emails, proxies, index = 0, numThreads = 4) {
+  if (index >= emails.length) {
+    return;
   }
-} else {
-  const { email, proxy } = workerData;
-  auth(email, proxy);
+
+  const worker = new Worker(__filename, {
+    workerData: { email: emails[index], proxy: proxies[index] },
+  });
+  worker.on("message", (message) => {
+    console.log(message);
+  });
+  worker.on("error", (error) => {
+    console.error(error);
+  });
+  worker.on("exit", (code) => {
+    if (code !== 0) {
+      console.error(`Thread Exit ${code}`);
+    }
+    authRecursive(emails, proxies, index + numThreads, numThreads);
+  });
 }
+const main = async () => {
+  if (isMainThread) {
+    for (let i = 0; i < numThreads; i++) {
+      await delay(customDelay);
+      authRecursive(emails, proxies, i, numThreads);
+    }
+  } else {
+    await delay(customDelay);
+    const { email, proxy } = workerData;
+    auth(email, proxy);
+  }
+};
+main();
